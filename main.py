@@ -10,16 +10,19 @@ from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeybo
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
+import os
+from flask import Flask
+import threading
 
 # ==========================================
-# CONFIGURATION (Yahan apni details dalo)
+# CONFIGURATION
 # ==========================================
-BOT_TOKEN = "9014327151:AAHzrXEqqF9HY6CDmpdwnuz3N3qsYt-r1Qw"
-FIREBASE_URL = "https://tumhara-baap-default-rtdb.firebaseio.com" # End mein / mat lagana
-FAM_API_KEY = "fam_77567c5053f8e96c08aab9f1d5670d4e0df13a5c"
+BOT_TOKEN = os.getenv("BOT_TOKEN", "9014327151:AAHzrXEqqF9HY6CDmpdwnuz3N3qsYt-r1Qw")
+FIREBASE_URL = os.getenv("FIREBASE_URL", "https://tumhara-baap-default-rtdb.firebaseio.com")
+FAM_API_KEY = os.getenv("FAM_API_KEY", "fam_77567c5053f8e96c08aab9f1d5670d4e0df13a5c")
 
-# FamGateway URL (Agar unka alag ho toh yahan change karein)
-FAM_API_URL = "https://api.famgateway.in" 
+# ✅ FamGateway ka Sahi URL (Bina 'api.' ke)
+FAM_API_URL = "https://famgateway.in" 
 
 logging.basicConfig(level=logging.INFO)
 bot = Bot(token=BOT_TOKEN)
@@ -82,9 +85,12 @@ def generate_key():
 # ==========================================
 class AdminStates(StatesGroup):
     waiting_for_welcome = State()
-    waiting_for_apk = State()
     waiting_for_price = State()
     waiting_for_broadcast = State()
+    waiting_for_product_name = State()
+    waiting_for_product_price = State()
+    waiting_for_product_apk = State()
+    waiting_for_product_id = State()
 
 class UserStates(StatesGroup):
     waiting_for_deposit_amt = State()
@@ -96,7 +102,7 @@ class UserStates(StatesGroup):
 async def set_admin_cmd(message: types.Message):
     current_admin = get_config('super_admin')
     if current_admin:
-        await message.answer("❌ Admin pehle se set hai! Koi aur admin nahi ban sakta.")
+        await message.answer("❌ Admin pehle se set hai!")
         return
     set_config('super_admin', message.from_user.id)
     await message.answer("👑 **Aap ab Super Admin hain!**\nAb aap `/admin` command use kar sakte hain.", parse_mode="Markdown")
@@ -150,7 +156,7 @@ async def show_main_menu(message: types.Message):
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🛍 Products", callback_data="shop"), InlineKeyboardButton(text="👤 Profile", callback_data="profile")],
         [InlineKeyboardButton(text="💰 Deposit", callback_data="deposit"), InlineKeyboardButton(text="📜 History", callback_data="history")],
-        [InlineKeyboardButton(text="🆘 Support", url="https://t.me/YourSupportUsername")]
+        [InlineKeyboardButton(text="🆘 Support", url="https://t.me/dark_config001")]
     ])
     await message.answer("🏪 **SM STORE MAIN MENU**\n\nApna option chunein:", reply_markup=kb, parse_mode="Markdown")
 
@@ -175,26 +181,42 @@ async def show_profile(call: types.CallbackQuery):
 
 @dp.callback_query(F.data == "shop")
 async def show_shop(call: types.CallbackQuery):
-    p1h = get_config('price_1hour', 9)
-    p2h = get_config('price_2hour', 19)
-    p3h = get_config('price_3hour', 29)
-    p6h = get_config('price_6hour', 50)
-    p1d = get_config('price_1day', 90)
+    # Products ko Firebase se load karo, agar nahi hai toh default set karo
+    products = get_db('products') or {}
+    if not products:
+        # Default products create karo
+        default_products = {
+            "1hour": {"name": "1 Hour", "price": 9, "apk": ""},
+            "2hour": {"name": "2 Hours", "price": 19, "apk": ""},
+            "3hour": {"name": "3 Hours", "price": 29, "apk": ""},
+            "6hour": {"name": "6 Hours", "price": 50, "apk": ""},
+            "1day": {"name": "1 Day", "price": 90, "apk": ""}
+        }
+        for pid, pdata in default_products.items():
+            set_db(f'products/{pid}', pdata)
+        products = default_products
+
+    buttons = []
+    for pid, pdata in products.items():
+        btn_text = f"{pdata.get('name', pid)} - ₹{pdata.get('price', 0)}"
+        buttons.append([InlineKeyboardButton(text=btn_text, callback_data=f"buy_{pid}")])
     
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text=f"⏱ 1 Hour - ₹{p1h}", callback_data="buy_1hour")],
-        [InlineKeyboardButton(text=f"⏱ 2 Hours - ₹{p2h}", callback_data="buy_2hour")],
-        [InlineKeyboardButton(text=f"⏱ 3 Hours - ₹{p3h}", callback_data="buy_3hour")],
-        [InlineKeyboardButton(text=f"⏱ 6 Hours - ₹{p6h}", callback_data="buy_6hour")],
-        [InlineKeyboardButton(text=f"📅 1 Day - ₹{p1d}", callback_data="buy_1day")],
-        [InlineKeyboardButton(text="🔙 Back", callback_data="back_main")]
-    ])
+    buttons.append([InlineKeyboardButton(text="🔙 Back", callback_data="back_main")])
+    kb = InlineKeyboardMarkup(inline_keyboard=buttons)
+    
     await call.message.edit_text("🛍 **SELECT YOUR PLAN**\nWallet se paise deduct honge.", reply_markup=kb, parse_mode="Markdown")
 
 @dp.callback_query(F.data.startswith("buy_"))
 async def process_buy(call: types.CallbackQuery):
-    duration = call.data.split("_")[1]
-    price = float(get_config(f'price_{duration}', 10))
+    product_id = call.data.split("_")[1]
+    product = get_db(f'products/{product_id}')
+    
+    if not product:
+        await call.answer("❌ Product not found!", show_alert=True)
+        return
+
+    price = float(product.get('price', 0))
+    apk_link = product.get('apk', '')
     uid = call.from_user.id
     
     bal = get_user_wallet(uid)
@@ -205,8 +227,8 @@ async def process_buy(call: types.CallbackQuery):
     update_wallet(uid, -price)
     key = generate_key()
     
-    unit = 'hours' if 'hour' in duration else 'days'
-    val = int(duration.replace('hour', '').replace('day', ''))
+    unit = 'hours' if 'hour' in product_id else 'days'
+    val = int(product_id.replace('hour', '').replace('day', ''))
     
     set_db(f'licenses/{key}', {
         'status': 'active',
@@ -223,20 +245,24 @@ async def process_buy(call: types.CallbackQuery):
     })
     
     set_db(f'users/{uid}/history/{int(time.time())}', {
-        'key': key, 'plan': duration, 'price': price, 'date': time.time()
+        'key': key, 'plan': product.get('name', product_id), 'price': price, 'date': time.time()
     })
     
-    apk_link = get_config('apk_link', 'https://t.me/YourSupportUsername')
-    
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📥 DOWNLOAD APK", url=apk_link)],
-        [InlineKeyboardButton(text="🔙 Main Menu", callback_data="back_main")]
-    ])
+    # APK button
+    if apk_link:
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="📥 DOWNLOAD APK", url=apk_link)],
+            [InlineKeyboardButton(text="🔙 Main Menu", callback_data="back_main")]
+        ])
+    else:
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🔙 Main Menu", callback_data="back_main")]
+        ])
     
     await call.message.edit_text(
         f"✅ **PURCHASE SUCCESSFUL!**\n\n"
         f"🔑 **Your Key:** `{key}`\n"
-        f"⏱ **Plan:** {duration.upper()}\n"
+        f"⏱ **Plan:** {product.get('name', product_id)}\n"
         f"💰 **Price:** ₹{price}\n\n"
         f"APK download karne ke liye niche button dabayein:",
         reply_markup=kb, parse_mode="Markdown"
@@ -277,23 +303,27 @@ async def create_fam_order(message: types.Message, amount: int):
     uid = message.from_user.id
     order_id = f"SM{int(time.time())}{random.randint(100,999)}"
     
-    # FamGateway API call
+    # ✅ Sahi API Call (FamGateway documentation ke according)
+    headers = {
+        "Content-Type": "application/json",
+        "X-Api-Key": FAM_API_KEY  # Key header mein jati hai
+    }
     payload = {
-        "api_key": FAM_API_KEY,  # Key direct payload mein jati hai
         "amount": amount,
-        "order_id": order_id,
         "customer_name": message.from_user.full_name
     }
     
     try:
-        res = requests.post(f"{FAM_API_URL}/api/create-order", json=payload, timeout=10).json()
+        # ✅ Sahi Endpoint: /api/create-order
+        res = requests.post(f"{FAM_API_URL}/api/create-order", json=payload, headers=headers, timeout=15).json()
         
-        # Check response (FamGateway status true/false bhejta hai)
-        if res.get("status") == True or res.get("status") == "success":
-            qr_url = res.get("qr_url") or res.get("payment_url") 
-            upi_id = res.get("upi_id", "Check QR")
+        # FamGateway response check
+        if res.get("status") == "success" or res.get("success"):
+            data = res.get("data", res)
+            qr_url = data.get("qr_url") or data.get("qr_image")
+            order_id = data.get("order_id", order_id)
+            upi_id = data.get("upi_id", "Check QR")
             
-            # Save order in DB
             set_db(f'orders/{order_id}', {
                 'uid': uid, 'amount': amount, 'status': 'pending', 'date': time.time()
             })
@@ -303,7 +333,6 @@ async def create_fam_order(message: types.Message, amount: int):
                 [InlineKeyboardButton(text="🔙 Cancel", callback_data="back_main")]
             ])
             
-            # Agar QR URL hai toh photo bhejenge, warna text
             if qr_url:
                 await message.answer_photo(
                     photo=qr_url,
@@ -329,12 +358,12 @@ async def verify_payment(call: types.CallbackQuery):
         await call.answer("❌ Invalid or already paid order!", show_alert=True)
         return
         
-    # FamGateway verify URL format
     try:
-        res = requests.get(f"{FAM_API_URL}/api/verify-order.php?api_key={FAM_API_KEY}&order_id={order_id}", timeout=10).json()
+        # ✅ Sahi Status Endpoint
+        res = requests.get(f"{FAM_API_URL}/api/checkout-status.php?order_id={order_id}", timeout=15).json()
         
-        # Check if paid
-        if res.get("status") == True or res.get("status") == "success" or res.get("payment_status") == "SUCCESS":
+        # Status check
+        if res.get("status") == "success" or res.get("success") or res.get("payment_status") == "SUCCESS":
             update_wallet(call.from_user.id, order['amount'])
             set_db(f'orders/{order_id}/status', 'paid')
             await call.message.edit_text(f"✅ **Payment Verified!**\n₹{order['amount']} added to your wallet.")
@@ -353,7 +382,6 @@ async def show_history(call: types.CallbackQuery):
         return
         
     text = "📜 **PURCHASE HISTORY**\n\n"
-    # Sort by newest
     sorted_hist = sorted(hist.values(), key=lambda x: x.get('date', 0), reverse=True)
     for v in sorted_hist[:5]:
         date = datetime.fromtimestamp(v['date']).strftime('%d %b, %H:%M')
@@ -367,7 +395,7 @@ async def back_to_main(call: types.CallbackQuery):
     await show_main_menu(call.message)
 
 # ==========================================
-# ADMIN PANEL
+# ADMIN PANEL (Products Manage)
 # ==========================================
 @dp.message(Command("admin"))
 async def admin_panel(message: types.Message):
@@ -376,9 +404,8 @@ async def admin_panel(message: types.Message):
         
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📊 Stats", callback_data="adm_stats"), InlineKeyboardButton(text="👥 Users", callback_data="adm_users")],
-        [InlineKeyboardButton(text="⚙️ Welcome Message", callback_data="adm_welcome"), InlineKeyboardButton(text="🛍 Prices", callback_data="adm_prices")],
-        [InlineKeyboardButton(text="📥 Set APK Link", callback_data="adm_apk"), InlineKeyboardButton(text="📢 Announcement", callback_data="adm_broadcast")],
-        [InlineKeyboardButton(text="🛠 Maintenance", callback_data="adm_maint")],
+        [InlineKeyboardButton(text="⚙️ Welcome Message", callback_data="adm_welcome"), InlineKeyboardButton(text="🛍 Products", callback_data="adm_products")],
+        [InlineKeyboardButton(text="📢 Announcement", callback_data="adm_broadcast"), InlineKeyboardButton(text="🛠 Maintenance", callback_data="adm_maint")],
     ])
     await message.answer("👑 **SM STORE ADMIN PANEL**\n\nSelect an option:", reply_markup=kb, parse_mode="Markdown")
 
@@ -410,47 +437,76 @@ async def save_welcome(message: types.Message, state: FSMContext):
     await state.clear()
     await message.answer("✅ Welcome Message updated!", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙 Admin Menu", callback_data="adm_back")]]))
 
-@dp.callback_query(F.data == "adm_apk")
-async def adm_apk(call: types.CallbackQuery, state: FSMContext):
-    await state.set_state(AdminStates.waiting_for_apk)
-    await call.message.edit_text("📥 APK ka direct link bhejein (URL):")
+# ✅ NAYA: Products Management
+@dp.callback_query(F.data == "adm_products")
+async def adm_products(call: types.CallbackQuery):
+    products = get_db('products') or {}
+    buttons = []
+    for pid, pdata in products.items():
+        buttons.append([InlineKeyboardButton(text=f"✏️ {pdata.get('name', pid)}", callback_data=f"editprod_{pid}")])
+    buttons.append([InlineKeyboardButton(text="➕ Add New Product", callback_data="addprod")])
+    buttons.append([InlineKeyboardButton(text="🔙 Back", callback_data="adm_back")])
+    await call.message.edit_text("🛍 **MANAGE PRODUCTS**\nKis product ko edit karna hai?", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
 
-@dp.message(AdminStates.waiting_for_apk)
-async def save_apk(message: types.Message, state: FSMContext):
-    if not is_admin(message.from_user.id): return
-    set_config('apk_link', message.text)
-    await state.clear()
-    await message.answer("✅ APK Link updated!", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙 Admin Menu", callback_data="adm_back")]]))
+@dp.callback_query(F.data.startswith("editprod_"))
+async def edit_product(call: types.CallbackQuery, state: FSMContext):
+    pid = call.data.split("_")[1]
+    product = get_db(f'products/{pid}')
+    if not product:
+        await call.answer("Product not found!", show_alert=True)
+        return
+    
+    await state.set_state(AdminStates.waiting_for_product_name)
+    await state.update_data(pid=pid)
+    await call.message.edit_text(f"Product: {product.get('name')}\nCurrent Price: ₹{product.get('price')}\nCurrent APK: {product.get('apk', 'Not set')}\n\nNaya **Product Name** type karein:")
 
-@dp.callback_query(F.data == "adm_prices")
-async def adm_prices(call: types.CallbackQuery):
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text=f"1h - ₹{get_config('price_1hour', 9)}", callback_data="price_1hour"), InlineKeyboardButton(text=f"2h - ₹{get_config('price_2hour', 19)}", callback_data="price_2hour")],
-        [InlineKeyboardButton(text=f"3h - ₹{get_config('price_3hour', 29)}", callback_data="price_3hour"), InlineKeyboardButton(text=f"6h - ₹{get_config('price_6hour', 50)}", callback_data="price_6hour")],
-        [InlineKeyboardButton(text=f"1d - ₹{get_config('price_1day', 90)}", callback_data="price_1day")],
-        [InlineKeyboardButton(text="🔙 Back", callback_data="adm_back")]
-    ])
-    await call.message.edit_text("💰 **MANAGE PRICES**\nKis plan ka price change karna hai?", reply_markup=kb)
-
-@dp.callback_query(F.data.startswith("price_"))
-async def edit_price(call: types.CallbackQuery, state: FSMContext):
-    plan = call.data.split("_")[1]
-    await state.set_state(AdminStates.waiting_for_price)
-    await state.update_data(plan=plan)
-    await call.message.edit_text(f"💵 `{plan}` ka naya price (₹) type karein:")
-
-@dp.message(AdminStates.waiting_for_price)
-async def save_price(message: types.Message, state: FSMContext):
+@dp.message(AdminStates.waiting_for_product_name)
+async def save_product_name(message: types.Message, state: FSMContext):
     if not is_admin(message.from_user.id): return
     data = await state.get_data()
-    plan = data['plan']
+    pid = data['pid']
+    update_db(f'products/{pid}', {'name': message.text})
+    await state.set_state(AdminStates.waiting_for_product_price)
+    await message.answer(f"✅ Name updated!\nAb is product ka **Price (₹)** type karein:")
+
+@dp.message(AdminStates.waiting_for_product_price)
+async def save_product_price(message: types.Message, state: FSMContext):
+    if not is_admin(message.from_user.id): return
+    data = await state.get_data()
+    pid = data['pid']
     try:
         price = int(message.text)
-        set_config(f'price_{plan}', price)
-        await state.clear()
-        await message.answer(f"✅ `{plan}` price set to ₹{price}!", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙 Admin Menu", callback_data="adm_back")]]))
-    except:
-        await message.answer("❌ Invalid amount. Sirf number bhejein.")
+        update_db(f'products/{pid}', {'price': price})
+        await state.set_state(AdminStates.waiting_for_product_apk)
+        await message.answer(f"✅ Price set to ₹{price}!\nAb is product ka **APK Link** type karein (ya 'skip' likhein):")
+    except ValueError:
+        await message.answer("❌ Sirf number type karein.")
+
+@dp.message(AdminStates.waiting_for_product_apk)
+async def save_product_apk(message: types.Message, state: FSMContext):
+    if not is_admin(message.from_user.id): return
+    data = await state.get_data()
+    pid = data['pid']
+    apk = message.text if message.text.lower() != 'skip' else ''
+    update_db(f'products/{pid}', {'apk': apk})
+    await state.clear()
+    await message.answer("✅ Product updated successfully!", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙 Admin Menu", callback_data="adm_back")]]))
+
+@dp.callback_query(F.data == "addprod")
+async def add_product(call: types.CallbackQuery, state: FSMContext):
+    await state.set_state(AdminStates.waiting_for_product_id)
+    await call.message.edit_text("🆕 Naya Product ID type karein (jaise: 2hour, 5day):")
+
+@dp.message(AdminStates.waiting_for_product_id)
+async def save_product_id(message: types.Message, state: FSMContext):
+    if not is_admin(message.from_user.id): return
+    pid = message.text.lower().strip()
+    if get_db(f'products/{pid}'):
+        return await message.answer("❌ Ye Product ID pehle se hai. Dusra ID daalein.")
+    
+    set_db(f'products/{pid}', {'name': pid, 'price': 10, 'apk': ''})
+    await state.clear()
+    await message.answer(f"✅ Product '{pid}' created!\nAb isko edit karke naam, price aur APK set karein.", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🛍 Manage Products", callback_data="adm_products")]]))
 
 @dp.callback_query(F.data == "adm_broadcast")
 async def adm_broadcast(call: types.CallbackQuery, state: FSMContext):
@@ -467,7 +523,7 @@ async def send_broadcast(message: types.Message, state: FSMContext):
         try:
             await bot.send_message(chat_id=uid, text=message.text)
             count += 1
-            await asyncio.sleep(0.05) # Rate limit avoid karne ke liye
+            await asyncio.sleep(0.05)
         except:
             pass
     await state.clear()
@@ -504,8 +560,19 @@ async def maint_check(message: types.Message):
         return
 
 # ==========================================
-# RUN BOT
+# FLASK SERVER FOR RENDER
 # ==========================================
-if __name__ == "__main__":
+app = Flask(__name__)
+
+@app.route('/')
+def home():
+    return "SM STORE Bot is alive!"
+
+def run_bot():
     print("🚀 SM STORE Bot Started!")
     asyncio.run(dp.start_polling(bot))
+
+if __name__ == "__main__":
+    threading.Thread(target=run_bot, daemon=True).start()
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host="0.0.0.0", port=port)
