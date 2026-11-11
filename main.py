@@ -18,10 +18,11 @@ import threading
 # CONFIGURATION
 # ==========================================
 BOT_TOKEN = os.getenv("BOT_TOKEN", "9014327151:AAHzrXEqqF9HY6CDmpdwnuz3N3qsYt-r1Qw")
-FIREBASE_URL = os.getenv("FIREBASE_URL", "https://tumhara-baap-default-rtdb.firebaseio.com")
+FIREBASE_URL = os.getenv("FIREBASE_URL", "https://tumhara-baap-default-rtdb.firebaseio.com
+")
 FAM_API_KEY = os.getenv("FAM_API_KEY", "fam_77567c5053f8e96c08aab9f1d5670d4e0df13a5c")
 
-# ✅ FamGateway ka Sahi URL (Bina 'api.' ke)
+# ✅ FamGateway URL (Bina 'api.' ke)
 FAM_API_URL = "https://famgateway.in" 
 
 logging.basicConfig(level=logging.INFO)
@@ -80,17 +81,24 @@ def generate_key():
     seg = lambda: ''.join(random.choices(chars, k=4))
     return f"SM-{seg()}-{seg()}-{seg()}"
 
+# Default Texts (Admin change kar sakta hai)
+DEFAULT_TEXTS = {
+    "welcome": "🔒 **PREMIUM VERIFICATION**\n✨ _ONE-TIME SECURE ACCESS_ ✨\n\n👑 WELCOME TO SM STORE\n🛡️ 100% SECURE • 🌍 ALL COUNTRIES\n\n1️⃣ TAP 📱 SHARE MY NUMBER BELOW\n2️⃣ CONFIRM THE TELEGRAM PROMPT\n3️⃣ 💎 YOUR PREMIUM STORE OPENS INSTANTLY\n\n⚡ TAKES LESS THAN 5 SECONDS",
+    "shop_title": "🛍 **SELECT YOUR PLAN**\nWallet se paise deduct honge.",
+    "success_msg": "✅ **PURCHASE SUCCESSFUL!**\n\n🔑 **Your Key:** `{key}`\n⏱ **Plan:** {plan}\n💰 **Price:** ₹{price}\n\nAPK download karne ke liye niche button dabayein:",
+    "main_menu": "🏪 **SM STORE MAIN MENU**\n\nApna option chunein:"
+}
+
 # ==========================================
 # STATES
 # ==========================================
 class AdminStates(StatesGroup):
-    waiting_for_welcome = State()
-    waiting_for_price = State()
-    waiting_for_broadcast = State()
+    waiting_for_text = State()
     waiting_for_product_name = State()
     waiting_for_product_price = State()
     waiting_for_product_apk = State()
     waiting_for_product_id = State()
+    waiting_for_broadcast = State()
 
 class UserStates(StatesGroup):
     waiting_for_deposit_amt = State()
@@ -124,17 +132,7 @@ async def cmd_start(message: types.Message):
     user_phone = get_db(f'users/{user_id}/phone')
 
     if verify_on and not user_phone:
-        default_welcome = (
-            "🔒 **PREMIUM VERIFICATION**\n"
-            "✨ _ONE-TIME SECURE ACCESS_ ✨\n\n"
-            "👑 WELCOME TO SM STORE\n"
-            "🛡️ 100% SECURE • 🌍 ALL COUNTRIES\n\n"
-            "1️⃣ TAP 📱 SHARE MY NUMBER BELOW\n"
-            "2️⃣ CONFIRM THE TELEGRAM PROMPT\n"
-            "3️⃣ 💎 YOUR PREMIUM STORE OPENS INSTANTLY\n\n"
-            "⚡ TAKES LESS THAN 5 SECONDS"
-        )
-        welcome_text = get_config('welcome_msg', default_welcome)
+        welcome_text = get_config('text_welcome', DEFAULT_TEXTS['welcome'])
         
         kb = ReplyKeyboardMarkup(
             keyboard=[[KeyboardButton(text="📱 SHARE MY NUMBER", request_contact=True)]],
@@ -153,12 +151,13 @@ async def handle_contact(message: types.Message):
     await show_main_menu(message)
 
 async def show_main_menu(message: types.Message):
+    menu_text = get_config('text_main_menu', DEFAULT_TEXTS['main_menu'])
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🛍 Products", callback_data="shop"), InlineKeyboardButton(text="👤 Profile", callback_data="profile")],
         [InlineKeyboardButton(text="💰 Deposit", callback_data="deposit"), InlineKeyboardButton(text="📜 History", callback_data="history")],
         [InlineKeyboardButton(text="🆘 Support", url="https://t.me/dark_config001")]
     ])
-    await message.answer("🏪 **SM STORE MAIN MENU**\n\nApna option chunein:", reply_markup=kb, parse_mode="Markdown")
+    await message.answer(menu_text, reply_markup=kb, parse_mode="Markdown")
 
 # ==========================================
 # USER FLOWS
@@ -181,10 +180,10 @@ async def show_profile(call: types.CallbackQuery):
 
 @dp.callback_query(F.data == "shop")
 async def show_shop(call: types.CallbackQuery):
-    # Products ko Firebase se load karo, agar nahi hai toh default set karo
     products = get_db('products') or {}
+    
+    # Default products agar DB khali hai
     if not products:
-        # Default products create karo
         default_products = {
             "1hour": {"name": "1 Hour", "price": 9, "apk": ""},
             "2hour": {"name": "2 Hours", "price": 19, "apk": ""},
@@ -204,7 +203,8 @@ async def show_shop(call: types.CallbackQuery):
     buttons.append([InlineKeyboardButton(text="🔙 Back", callback_data="back_main")])
     kb = InlineKeyboardMarkup(inline_keyboard=buttons)
     
-    await call.message.edit_text("🛍 **SELECT YOUR PLAN**\nWallet se paise deduct honge.", reply_markup=kb, parse_mode="Markdown")
+    shop_text = get_config('text_shop_title', DEFAULT_TEXTS['shop_title'])
+    await call.message.edit_text(shop_text, reply_markup=kb, parse_mode="Markdown")
 
 @dp.callback_query(F.data.startswith("buy_"))
 async def process_buy(call: types.CallbackQuery):
@@ -228,7 +228,7 @@ async def process_buy(call: types.CallbackQuery):
     key = generate_key()
     
     unit = 'hours' if 'hour' in product_id else 'days'
-    val = int(product_id.replace('hour', '').replace('day', ''))
+    val = int(''.join(filter(str.isdigit, product_id))) if any(c.isdigit() for c in product_id) else 1
     
     set_db(f'licenses/{key}', {
         'status': 'active',
@@ -248,7 +248,6 @@ async def process_buy(call: types.CallbackQuery):
         'key': key, 'plan': product.get('name', product_id), 'price': price, 'date': time.time()
     })
     
-    # APK button
     if apk_link:
         kb = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="📥 DOWNLOAD APK", url=apk_link)],
@@ -259,14 +258,10 @@ async def process_buy(call: types.CallbackQuery):
             [InlineKeyboardButton(text="🔙 Main Menu", callback_data="back_main")]
         ])
     
-    await call.message.edit_text(
-        f"✅ **PURCHASE SUCCESSFUL!**\n\n"
-        f"🔑 **Your Key:** `{key}`\n"
-        f"⏱ **Plan:** {product.get('name', product_id)}\n"
-        f"💰 **Price:** ₹{price}\n\n"
-        f"APK download karne ke liye niche button dabayein:",
-        reply_markup=kb, parse_mode="Markdown"
-    )
+    success_template = get_config('text_success_msg', DEFAULT_TEXTS['success_msg'])
+    success_text = success_template.format(key=key, plan=product.get('name', product_id), price=price)
+    
+    await call.message.edit_text(success_text, reply_markup=kb, parse_mode="Markdown")
 
 @dp.callback_query(F.data == "deposit")
 async def deposit_menu(call: types.CallbackQuery):
@@ -303,10 +298,9 @@ async def create_fam_order(message: types.Message, amount: int):
     uid = message.from_user.id
     order_id = f"SM{int(time.time())}{random.randint(100,999)}"
     
-    # ✅ Sahi API Call (FamGateway documentation ke according)
     headers = {
         "Content-Type": "application/json",
-        "X-Api-Key": FAM_API_KEY  # Key header mein jati hai
+        "X-Api-Key": FAM_API_KEY
     }
     payload = {
         "amount": amount,
@@ -314,10 +308,8 @@ async def create_fam_order(message: types.Message, amount: int):
     }
     
     try:
-        # ✅ Sahi Endpoint: /api/create-order
         res = requests.post(f"{FAM_API_URL}/api/create-order", json=payload, headers=headers, timeout=15).json()
         
-        # FamGateway response check
         if res.get("status") == "success" or res.get("success"):
             data = res.get("data", res)
             qr_url = data.get("qr_url") or data.get("qr_image")
@@ -359,10 +351,8 @@ async def verify_payment(call: types.CallbackQuery):
         return
         
     try:
-        # ✅ Sahi Status Endpoint
         res = requests.get(f"{FAM_API_URL}/api/checkout-status.php?order_id={order_id}", timeout=15).json()
         
-        # Status check
         if res.get("status") == "success" or res.get("success") or res.get("payment_status") == "SUCCESS":
             update_wallet(call.from_user.id, order['amount'])
             set_db(f'orders/{order_id}/status', 'paid')
@@ -395,7 +385,7 @@ async def back_to_main(call: types.CallbackQuery):
     await show_main_menu(call.message)
 
 # ==========================================
-# ADMIN PANEL (Products Manage)
+# ADMIN PANEL (Fully Customizable)
 # ==========================================
 @dp.message(Command("admin"))
 async def admin_panel(message: types.Message):
@@ -404,7 +394,7 @@ async def admin_panel(message: types.Message):
         
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📊 Stats", callback_data="adm_stats"), InlineKeyboardButton(text="👥 Users", callback_data="adm_users")],
-        [InlineKeyboardButton(text="⚙️ Welcome Message", callback_data="adm_welcome"), InlineKeyboardButton(text="🛍 Products", callback_data="adm_products")],
+        [InlineKeyboardButton(text="🛍 Manage Products", callback_data="adm_products"), InlineKeyboardButton(text="📝 Edit Texts", callback_data="adm_texts")],
         [InlineKeyboardButton(text="📢 Announcement", callback_data="adm_broadcast"), InlineKeyboardButton(text="🛠 Maintenance", callback_data="adm_maint")],
     ])
     await message.answer("👑 **SM STORE ADMIN PANEL**\n\nSelect an option:", reply_markup=kb, parse_mode="Markdown")
@@ -414,7 +404,6 @@ async def adm_stats(call: types.CallbackQuery):
     users = get_db('users') or {}
     total_users = len(users)
     total_bal = sum(float(u.get('wallet', 0)) for u in users.values())
-    
     await call.message.edit_text(f"📊 **STATS**\n\n👥 Total Users: {total_users}\n💰 Total Balance: ₹{total_bal:.2f}", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙 Back", callback_data="adm_back")]]), parse_mode="Markdown")
 
 @dp.callback_query(F.data == "adm_users")
@@ -425,19 +414,36 @@ async def adm_users(call: types.CallbackQuery):
         text += f"🆔 `{uid}`\n📞 {data.get('phone', 'N/A')}\n💰 ₹{data.get('wallet', 0)}\n\n"
     await call.message.edit_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙 Back", callback_data="adm_back")]]))
 
-@dp.callback_query(F.data == "adm_welcome")
-async def adm_welcome(call: types.CallbackQuery, state: FSMContext):
-    await state.set_state(AdminStates.waiting_for_welcome)
-    await call.message.edit_text("✏️ Naya Welcome Message type karein:")
+@dp.callback_query(F.data == "adm_texts")
+async def adm_texts(call: types.CallbackQuery):
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="👋 Welcome Text", callback_data="edit_text_welcome")],
+        [InlineKeyboardButton(text="🛍 Shop Title Text", callback_data="edit_text_shop_title")],
+        [InlineKeyboardButton(text="✅ Success Message", callback_data="edit_text_success_msg")],
+        [InlineKeyboardButton(text="🏪 Main Menu Text", callback_data="edit_text_main_menu")],
+        [InlineKeyboardButton(text="🔙 Back", callback_data="adm_back")]
+    ])
+    await call.message.edit_text("📝 **EDIT TEXTS**\nKaunsa text change karna hai?", reply_markup=kb)
 
-@dp.message(AdminStates.waiting_for_welcome)
-async def save_welcome(message: types.Message, state: FSMContext):
+@dp.callback_query(F.data.startswith("edit_text_"))
+async def edit_text_prompt(call: types.CallbackQuery, state: FSMContext):
+    text_key = call.data.replace("edit_text_", "")
+    await state.set_state(AdminStates.waiting_for_text)
+    await state.update_data(text_key=text_key)
+    
+    current_text = get_config(f'text_{text_key}', DEFAULT_TEXTS.get(text_key, 'Not set'))
+    await call.message.edit_text(f"✏️ **Current Text ({text_key}):**\n\n`{current_text}`\n\nNaya text type karein (Markdown allowed):")
+
+@dp.message(AdminStates.waiting_for_text)
+async def save_custom_text(message: types.Message, state: FSMContext):
     if not is_admin(message.from_user.id): return
-    set_config('welcome_msg', message.text)
+    data = await state.get_data()
+    text_key = data['text_key']
+    set_config(f'text_{text_key}', message.text)
     await state.clear()
-    await message.answer("✅ Welcome Message updated!", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙 Admin Menu", callback_data="adm_back")]]))
+    await message.answer("✅ Text updated successfully!", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙 Admin Menu", callback_data="adm_back")]]))
 
-# ✅ NAYA: Products Management
+# --- Products Manage ---
 @dp.callback_query(F.data == "adm_products")
 async def adm_products(call: types.CallbackQuery):
     products = get_db('products') or {}
@@ -495,7 +501,7 @@ async def save_product_apk(message: types.Message, state: FSMContext):
 @dp.callback_query(F.data == "addprod")
 async def add_product(call: types.CallbackQuery, state: FSMContext):
     await state.set_state(AdminStates.waiting_for_product_id)
-    await call.message.edit_text("🆕 Naya Product ID type karein (jaise: 2hour, 5day):")
+    await call.message.edit_text("🆕 Naya Product ID type karein (jaise: 2hour, 5day, 1month):")
 
 @dp.message(AdminStates.waiting_for_product_id)
 async def save_product_id(message: types.Message, state: FSMContext):
@@ -508,6 +514,7 @@ async def save_product_id(message: types.Message, state: FSMContext):
     await state.clear()
     await message.answer(f"✅ Product '{pid}' created!\nAb isko edit karke naam, price aur APK set karein.", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🛍 Manage Products", callback_data="adm_products")]]))
 
+# --- Broadcast & Maintenance ---
 @dp.callback_query(F.data == "adm_broadcast")
 async def adm_broadcast(call: types.CallbackQuery, state: FSMContext):
     await state.set_state(AdminStates.waiting_for_broadcast)
